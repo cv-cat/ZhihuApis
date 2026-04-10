@@ -44,6 +44,7 @@
 
 ```bash
 pip install -r requirements.txt
+npm install
 ```
 
 ### 🚀 运行项目
