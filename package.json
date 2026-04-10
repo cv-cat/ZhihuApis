@@ -1,0 +1,10 @@
+{
+  "name": "zhihu-platform",
+  "version": "1.0.0",
+  "description": "知乎评论数据采集服务 JS 运行时依赖",
+  "private": true,
+  "dependencies": {
+    "canvas": "^2.11.2",
+    "jsdom": "^24.0.0"
+  }
+}
