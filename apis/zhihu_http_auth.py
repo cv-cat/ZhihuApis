@@ -223,7 +223,15 @@ class ZhihuHTTPAuth:
         """按知乎网页的 ``POST /udid`` 生成本会话的浏览器 ID。"""
         if self._duid:
             return self._duid
-        response = self._request("POST", UDID_URL, allow_redirects=False)
+        # Chrome 的页面 Fetch 对 `/udid` 只带 `Accept: */*`；全局会话的
+        # `X-Requested-With: fetch` 不会出现在这一个请求。requests 用
+        # ``None`` 覆盖会话头，PreparedRequest 会将其移除。
+        response = self._request(
+            "POST",
+            UDID_URL,
+            headers={"Accept": "*/*", "X-Requested-With": None},
+            allow_redirects=False,
+        )
         if response.status_code != 200:
             raise ZhihuAPIError("知乎浏览器 ID 请求失败", http_status=response.status_code)
         value = response.text.strip()
@@ -462,6 +470,9 @@ class ZhihuHTTPAuth:
         skip_signature = bool(kwargs.pop("_skip_signature", False))
         if self._signer is not None and not skip_signature:
             request_headers = dict(kwargs.get("headers") or {})
+            # ``None`` is requests 的会话头删除标记；预备签名请求不能
+            # 接收这个值，真正发出时仍保留它以覆盖 Session.headers。
+            signing_headers = {key: value for key, value in request_headers.items() if value is not None}
             # 使用 requests.Prepare 得到和真实请求相同的 query/body 字符串，
             # 再把签名 Header 放回原请求；不会发送这次预备请求。
             prepared = requests.Request(
@@ -470,10 +481,10 @@ class ZhihuHTTPAuth:
                 params=kwargs.get("params"),
                 data=kwargs.get("data"),
                 json=kwargs.get("json"),
-                headers=request_headers,
+                headers=signing_headers,
             ).prepare()
             d_c0 = self._cookie_value("d_c0")
-            x_zst_81 = request_headers.get("x-zst-81") or request_headers.get("X-Zst-81")
+            x_zst_81 = signing_headers.get("x-zst-81") or signing_headers.get("X-Zst-81")
             request_headers.update(
                 self._signer.headers(
                     prepared.url,

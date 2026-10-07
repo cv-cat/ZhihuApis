@@ -79,6 +79,8 @@ class HttpAuthTests(unittest.TestCase):
         challenge = auth.begin_qr_login()
         self.assertEqual(challenge.qr_text, challenge.link)
         self.assertEqual(session.calls[0][0:2], ("POST", "https://www.zhihu.com/udid"))
+        self.assertEqual(session.calls[0][2]["headers"]["Accept"], "*/*")
+        self.assertIsNone(session.calls[0][2]["headers"]["X-Requested-With"])
         self.assertEqual(session.calls[1][1], QR_TOKEN_URL)
         self.assertEqual(session.headers["x-du-bid"], "duid-value")
 
