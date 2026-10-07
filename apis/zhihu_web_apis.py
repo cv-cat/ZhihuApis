@@ -10,9 +10,18 @@ from apis.zhihu_browser_auth import ZhihuBrowserAuth
 
 
 _READ_ONLY_GET = """async (path) => {
-    const response = await fetch(path, {
-        method: 'GET', credentials: 'include', cache: 'no-store'
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    let response;
+    try {
+        response = await fetch(path, {
+            method: 'GET', credentials: 'include', cache: 'no-store', signal: controller.signal
+        });
+    } catch (_) {
+        return {status: 0, data: {error: {code: 'timeout_or_network'}}};
+    } finally {
+        clearTimeout(timer);
+    }
     let data = null;
     try { data = await response.json(); } catch (_) {}
     return {status: response.status, data};
@@ -100,6 +109,8 @@ class ZhihuWebAPI:
             raise RuntimeError("浏览器会话已关闭")
         page = context.new_page()
         try:
+            if hasattr(page, "set_default_navigation_timeout"):
+                page.set_default_navigation_timeout(15000)
             page.goto(self.ARTICLE_EDITOR_URL, wait_until="domcontentloaded")
         except Exception:
             page.close()
@@ -140,10 +151,12 @@ class ZhihuWebAPI:
             raise RuntimeError("浏览器会话已关闭")
         page = context.new_page()
         try:
+            if hasattr(page, "set_default_navigation_timeout"):
+                page.set_default_navigation_timeout(15000)
             page.goto(f"https://zhuanlan.zhihu.com/p/{identifier}", wait_until="domcontentloaded")
             payload = self._get(page, f"/api/articles/{identifier}")
         finally:
-            page.close()
+            self._close_probe_page(page)
         if not isinstance(payload.get("content"), str):
             raise ZhihuAPIError("文章响应缺少 content", http_status=200)
         return payload
@@ -222,7 +235,7 @@ class ZhihuWebAPI:
                 raise ZhihuWebDraftSaveError("草稿已创建，但正文保存或回读失败；请检查草稿箱", draft_id=identifier) from exc
             return {"id": identifier, "state": "draft", "edit_url": f"https://zhuanlan.zhihu.com/p/{identifier}/edit"}
         finally:
-            page.close()
+            self._close_probe_page(page)
 
     def get_web_draft(self, draft_id: int | str) -> dict:
         """只读回读本人文章草稿。"""
@@ -231,7 +244,7 @@ class ZhihuWebAPI:
         try:
             payload = self._get(page, f"/api/articles/{identifier}/draft")
         finally:
-            page.close()
+            self._close_probe_page(page)
         if payload.get("state") != "draft" or payload.get("type") != "article_draft":
             raise ZhihuAPIError("知乎未返回文章草稿", http_status=200)
         return payload
@@ -242,6 +255,20 @@ class ZhihuWebAPI:
         self._write(
             self._www_page(), path=f"/api/v4/articles/{identifier}/draft", method="DELETE", body=None
         )
+
+    @staticmethod
+    def _close_probe_page(page) -> None:
+        """Bound cleanup for pages that can retain navigation tasks."""
+        try:
+            page.close(timeout=5000)
+        except TypeError:
+            # Small fake pages used by the contract tests have no timeout arg.
+            try:
+                page.close()
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     @staticmethod
     def _numeric_id(value: int | str) -> str:

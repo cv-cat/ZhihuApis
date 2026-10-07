@@ -165,7 +165,15 @@ class ZhihuBrowserAuth:
             raise ValueError("timeout_seconds 必须大于 0")
         self._observed_state = None
         self._observed_at = 0.0
-        self._page.goto(HOME_URL, wait_until="domcontentloaded")
+        try:
+            self._page.goto(HOME_URL, wait_until="domcontentloaded")
+        except Exception:
+            # A just-approved QR login may still be redirecting. The account
+            # response listener is authoritative when it already observed a
+            # successful /api/v4/me response; otherwise retry the probe.
+            observed = self._recent_observed_state()
+            if observed is None:
+                raise
         deadline = time.monotonic() + timeout_seconds
         while True:
             state = self.login_state()
@@ -179,7 +187,13 @@ class ZhihuBrowserAuth:
             raise ValueError("超时和轮询间隔必须大于 0")
         deadline = time.monotonic() + timeout_seconds
         while True:
-            state = self.login_state()
+            try:
+                state = self.login_state()
+            except Exception:
+                # QR approval causes a full-page navigation. Playwright can
+                # briefly invalidate the evaluation context during that hop;
+                # keep polling until the new document is ready.
+                state = self._recent_observed_state() or BrowserLoginState(None, None, "navigation_in_progress")
             if state.authenticated is True:
                 return state
             if time.monotonic() >= deadline:
