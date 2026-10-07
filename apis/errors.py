@@ -1,4 +1,4 @@
-"""知乎官方接口客户端共用错误。"""
+"""知乎接口客户端共用错误。"""
 
 
 class ZhihuAPIError(RuntimeError):
