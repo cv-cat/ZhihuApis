@@ -185,7 +185,9 @@ class ZhihuWebAPI:
         if host == "api.zhihu.com":
             match = re.fullmatch(r"/(answers|articles)/(\d+)/?", path)
             if match:
-                return self.get_answer(match.group(2)) if match.group(1) == "answers" else self.get_article(match.group(2))
+                if match.group(1) == "answers":
+                    return self.get_answer(match.group(2))
+                return self.get_article(match.group(2))
         raise ValueError("当前只支持回答或文章内容 URL")
 
     def draft_counts(self) -> dict[str, dict]:

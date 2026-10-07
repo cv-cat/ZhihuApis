@@ -247,7 +247,9 @@ class ZhihuHTTPAuth:
             authenticated = state.authenticated is True
         return QRLoginState(token, payload.get("status"), authenticated, response.status_code, False, payload)
 
-    def wait_for_qr_login(self, challenge: QRLoginChallenge, *, timeout_seconds: float = 180, poll_interval: float = 2) -> LoginState:
+    def wait_for_qr_login(
+        self, challenge: QRLoginChallenge, *, timeout_seconds: float = 180, poll_interval: float = 2
+    ) -> LoginState:
         if timeout_seconds <= 0 or poll_interval <= 0:
             raise ValueError("超时和轮询间隔必须大于 0")
         deadline = time.monotonic() + timeout_seconds
@@ -322,7 +324,11 @@ class ZhihuHTTPAuth:
             body["captcha_ticket"] = captcha_ticket
         encrypted_body, extra_headers = self._encrypted_body(body, encrypted_body)
         response = self._request(
-            "POST", SMS_CODE_URL, data=encrypted_body, headers={"Content-Type": "application/x-www-form-urlencoded", **dict(extra_headers)}, allow_redirects=False
+            "POST",
+            SMS_CODE_URL,
+            data=encrypted_body,
+            headers={"Content-Type": "application/x-www-form-urlencoded", **dict(extra_headers)},
+            allow_redirects=False,
         )
         payload = self._json(response, "短信接口")
         if response.status_code != 200:
