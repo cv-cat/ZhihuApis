@@ -47,12 +47,16 @@ class FakeContext:
     def __init__(self):
         self.page = FakePage()
         self.closed = False
+        self.cookies_added = []
 
     def new_page(self):
         return self.page
 
     def close(self):
         self.closed = True
+
+    def add_cookies(self, cookies):
+        self.cookies_added.extend(cookies)
 
 
 class FakeBrowser:
@@ -147,6 +151,35 @@ class BrowserAuthTests(unittest.TestCase):
             auth.close()
             self.assertTrue(playwright.chromium.context.closed)
             self.assertTrue(playwright.stopped)
+
+    def test_temporary_context_imports_cookie_without_persistent_profile(self):
+        playwright = FakePlaywright()
+        playwright.chromium.context.page.emit_on_home = True
+        auth = ZhihuBrowserAuth(headless=True, playwright_factory=lambda: playwright)
+        auth.import_cookie_header("z_c0=token=part; __Host-probe=ok;")
+        self.assertEqual(playwright.chromium.launch_kwargs, {"channel": "chrome", "headless": True})
+        self.assertEqual(playwright.chromium.browser.new_context_kwargs, {"accept_downloads": False})
+        cookies = playwright.chromium.context.cookies_added
+        self.assertEqual(len(cookies), 2)
+        self.assertEqual(cookies[0]["value"], "token=part")
+        self.assertEqual(cookies[0]["domain"], ".zhihu.com")
+        self.assertEqual(cookies[1]["url"], HOME_URL)
+        self.assertTrue(auth.verify_account(timeout_seconds=0.1).authenticated)
+        auth.close()
+        self.assertTrue(playwright.chromium.context.closed)
+
+    def test_cookie_import_rejects_persistent_profile_and_malformed_header(self):
+        playwright = FakePlaywright()
+        auth = ZhihuBrowserAuth(profile_dir="ignored-profile", playwright_factory=lambda: playwright)
+        with self.assertRaises(ValueError):
+            auth.import_cookie_header("z_c0=temporary")
+        self.assertIsNone(playwright.chromium.launch_kwargs)
+
+        auth = ZhihuBrowserAuth(playwright_factory=lambda: playwright)
+        for header in ("", "missing-equals", "bad name=value"):
+            with self.assertRaises(ValueError):
+                auth.import_cookie_header(header)
+        self.assertIsNone(playwright.chromium.launch_kwargs)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -11,6 +12,7 @@ from typing import Callable
 SIGNIN_URL = "https://www.zhihu.com/signin?next=%2F"
 ME_URL = "https://www.zhihu.com/api/v4/me"
 HOME_URL = "https://www.zhihu.com/"
+_COOKIE_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 # 只返回 HTTP 状态与登录判定，不将接口里的个人资料或 Cookie 带出浏览器。
 _LOGIN_PROBE = """async () => {
@@ -52,12 +54,14 @@ class ZhihuBrowserAuth:
         *,
         profile_dir: str | Path | None = None,
         channel: str = "chrome",
+        headless: bool = False,
         playwright_factory: Callable | None = None,
     ) -> None:
         if profile_dir is not None and not str(profile_dir).strip():
             raise ValueError("profile_dir 不能为空")
         self.profile_dir = Path(profile_dir).resolve() if profile_dir is not None else None
         self.channel = channel
+        self.headless = headless
         self._playwright_factory = playwright_factory
         self._playwright = None
         self._browser = None
@@ -79,12 +83,12 @@ class ZhihuBrowserAuth:
             self._playwright = self._playwright_factory()
         try:
             if self.profile_dir is None:
-                self._browser = self._playwright.chromium.launch(channel=self.channel, headless=False)
+                self._browser = self._playwright.chromium.launch(channel=self.channel, headless=self.headless)
                 self._context = self._browser.new_context(accept_downloads=False)
             else:
                 self.profile_dir.mkdir(parents=True, exist_ok=True)
                 self._context = self._playwright.chromium.launch_persistent_context(
-                    str(self.profile_dir), channel=self.channel, headless=False, accept_downloads=False
+                    str(self.profile_dir), channel=self.channel, headless=self.headless, accept_downloads=False
                 )
             self._page = self._context.new_page()
             self._page.on("response", self._observe_account_response)
@@ -113,6 +117,30 @@ class ZhihuBrowserAuth:
         """显示知乎登录页。二维码的生成、刷新和扫码由页面及用户完成。"""
         self.start()
         self._page.goto(SIGNIN_URL, wait_until="domcontentloaded")
+
+    def import_cookie_header(self, cookie_header: str) -> None:
+        """将本人会话的 Cookie 仅导入临时浏览器上下文，不保存或回显。"""
+        if self.profile_dir is not None:
+            raise ValueError("Cookie 导入仅支持无 profile_dir 的临时上下文")
+        if not isinstance(cookie_header, str) or not cookie_header.strip():
+            raise ValueError("Cookie 不能为空")
+        cookies = []
+        for part in cookie_header.split(";"):
+            if not part.strip():
+                continue
+            name, separator, value = part.strip().partition("=")
+            if not separator or not _COOKIE_NAME.fullmatch(name):
+                raise ValueError("Cookie 格式无效")
+            cookie = {"name": name, "value": value, "path": "/", "secure": True}
+            if name.startswith("__Host-"):
+                cookie["url"] = HOME_URL
+            else:
+                cookie["domain"] = ".zhihu.com"
+            cookies.append(cookie)
+        if not cookies:
+            raise ValueError("Cookie 不能为空")
+        self.start()
+        self._context.add_cookies(cookies)
 
     def login_state(self) -> BrowserLoginState:
         """在已打开的知乎页发起只读 GET /api/v4/me，不返回个人资料。"""
