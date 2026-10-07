@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 
@@ -44,8 +44,27 @@ class ZhihuOAuth:
         }
         return self.AUTHORIZE_URL + "?" + urlencode(params)
 
+    def authorization_code_from_callback(self, callback_url: str) -> str:
+        """从已注册回调地址提取知乎返回的 authorization_code。"""
+        expected = urlparse(self.redirect_uri)
+        callback = urlparse(callback_url)
+        if (callback.scheme, callback.netloc.lower(), callback.path) != (
+            expected.scheme, expected.netloc.lower(), expected.path
+        ):
+            raise ValueError("OAuth 回调地址与 redirect_uri 不一致")
+        params = parse_qs(callback.query, keep_blank_values=True)
+        for key, values in parse_qs(expected.query, keep_blank_values=True).items():
+            if params.get(key) != values:
+                raise ValueError("OAuth 回调地址缺少 redirect_uri 原有参数")
+        if params.get("error"):
+            raise ZhihuAPIError(f"OAuth 授权失败：{params['error'][0]}")
+        codes = params.get("authorization_code", [])
+        if len(codes) != 1 or not codes[0]:
+            raise ValueError("OAuth 回调需要且只能包含一个 authorization_code")
+        return codes[0]
+
     def exchange_code(self, authorization_code: str) -> dict:
-        if not authorization_code:
+        if not isinstance(authorization_code, str) or not authorization_code:
             raise ValueError("authorization_code 不能为空")
         response = self._session.request(
             "POST",
@@ -64,7 +83,8 @@ class ZhihuOAuth:
             payload = response.json()
         except ValueError as exc:
             raise ZhihuAPIError("OAuth 返回非 JSON 响应", http_status=response.status_code) from exc
-        if not isinstance(payload, dict) or response.status_code >= 400 or not payload.get("access_token"):
+        token = payload.get("access_token") if isinstance(payload, dict) else None
+        if response.status_code >= 400 or not isinstance(token, str) or not token.strip():
             message = payload.get("message") or payload.get("msg") if isinstance(payload, dict) else None
             raise ZhihuAPIError(str(message or "OAuth 授权码交换失败"), http_status=response.status_code)
         return payload

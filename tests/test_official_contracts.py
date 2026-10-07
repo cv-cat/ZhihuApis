@@ -65,6 +65,16 @@ class DataContractTests(unittest.TestCase):
             client.search("test")
         self.assertEqual(ctx.exception.code, 20001)
 
+    def test_user_contents_accepts_documented_next_offset_string(self):
+        session = FakeSession(FakeResponse({"Code": 0, "Data": {"Items": [], "Paging": {"NextOffset": "20"}}}))
+        client = ZhihuDataAPI("data-secret", session=session)
+        client.list_user_contents(offset="20", oauth_token="user-oauth")
+        self.assertEqual(session.calls[0][2]["params"]["Offset"], "20")
+        self.assertEqual(session.calls[0][2]["headers"]["X-OAuth-Token"], "user-oauth")
+        with self.assertRaises(ValueError):
+            client.list_user_contents(offset="20x")
+        self.assertEqual(len(session.calls), 1)
+
 
 class OAuthContractTests(unittest.TestCase):
     def test_authorization_code_flow_does_not_use_data_secret(self):
@@ -83,6 +93,28 @@ class OAuthContractTests(unittest.TestCase):
         self.assertEqual(kwargs["data"]["app_key"], "oauth-app-key")
         self.assertEqual(kwargs["data"]["grant_type"], "authorization_code")
         self.assertNotIn("Authorization", kwargs["headers"])
+
+    def test_callback_code_is_extracted_only_from_registered_redirect(self):
+        oauth = ZhihuOAuth("app-id", "oauth-app-key", "https://example.test/callback?tenant=1")
+        callback = "https://example.test/callback?tenant=1&authorization_code=abc%2B123"
+        self.assertEqual(oauth.authorization_code_from_callback(callback), "abc+123")
+        for invalid in (
+            "https://other.test/callback?tenant=1&authorization_code=abc",
+            "https://example.test/callback?authorization_code=abc",
+            "https://example.test/callback?tenant=1&authorization_code=a&authorization_code=b",
+        ):
+            with self.assertRaises(ValueError):
+                oauth.authorization_code_from_callback(invalid)
+        with self.assertRaises(ZhihuAPIError):
+            oauth.authorization_code_from_callback("https://example.test/callback?tenant=1&error=access_denied")
+
+    def test_exchange_rejects_non_string_access_token(self):
+        oauth = ZhihuOAuth(
+            "app-id", "oauth-app-key", "https://example.test/callback",
+            session=FakeSession(FakeResponse({"access_token": 123})),
+        )
+        with self.assertRaises(ZhihuAPIError):
+            oauth.exchange_code("auth-code")
 
 
 class PublishContractTests(unittest.TestCase):

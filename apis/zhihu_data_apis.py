@@ -92,16 +92,20 @@ class ZhihuDataAPI:
         self,
         *,
         content_type: str = "all",
-        offset: int = 0,
+        offset: int | str = 0,
         limit: int = 20,
         oauth_token: str | None = None,
         sort_field: str = "ts",
         sort_order: str = "desc",
     ) -> dict:
-        """列出本人或 OAuth 已授权用户公开范围的创作摘要。"""
+        """列出本人或 OAuth 已授权用户公开范围的创作摘要；可直接传回 NextOffset。"""
         if content_type not in self.CONTENT_TYPES:
             raise ValueError("content_type 不在官方支持范围")
-        if offset < 0 or not 1 <= limit <= 50:
+        if isinstance(offset, str):
+            valid_offset = bool(offset) and offset.isascii() and offset.isdigit()
+        else:
+            valid_offset = isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0
+        if not valid_offset or not 1 <= limit <= 50:
             raise ValueError("offset 或 limit 超出范围")
         if sort_field not in {"ts", "like_count"} or sort_order not in {"asc", "desc"}:
             raise ValueError("排序参数无效")

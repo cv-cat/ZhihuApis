@@ -36,7 +36,7 @@ pip install -r requirements-media.txt
 npm install
 ```
 
-复制 `.env.example` 到本机 `.env` 后填写所需凭证。项目**不会自动读取 `.env`**；示例通过环境变量传值。不要提交真实 Cookie、Access Secret、OAuth app_key 或发布密钥。
+复制 `.env.example` 到本机 `.env` 后填写所需凭证。示例显式调用 `load_dotenv()`；库本身不会自动读取 `.env`，已有的进程环境变量也不会被覆盖。不要提交真实 Cookie、Access Secret、OAuth app_key 或发布密钥。
 
 ### 三类鉴权分别申请
 
@@ -48,21 +48,56 @@ npm install
 
 ```python
 import os
+from dotenv import load_dotenv
 from apis.zhihu_data_apis import ZhihuDataAPI
-from apis.zhihu_oauth import ZhihuOAuth
-from apis.zhihu_creator_apis import ZhihuCreatorAPI
 
+load_dotenv()
 data = ZhihuDataAPI(os.environ["ZHIHU_ACCESS_SECRET"])
 items = data.search("咖啡", count=5)["Items"]
-own_article = data.get_item("https://zhuanlan.zhihu.com/p/123456789")
+owned = data.list_user_contents(content_type="article", limit=1)
+if owned["Items"]:
+    own_article = data.get_item(owned["Items"][0]["Url"])
+    print(own_article["Title"])
+# 翻页时可把 owned["Paging"]["NextOffset"] 字符串直接传给 offset。
 data.close()
+```
 
-# 需要第三方登录时，再配置独立的 OAuth 应用凭证。
-oauth = ZhihuOAuth(os.environ["ZHIHU_OAUTH_APP_ID"], os.environ["ZHIHU_OAUTH_APP_KEY"], os.environ["ZHIHU_OAUTH_REDIRECT_URI"])
-print(oauth.authorization_url())
-# user_token = oauth.exchange_code(authorization_code)["access_token"]
+第三方登录单独使用已获批的 OAuth 应用凭证。授权回调携带的是 `authorization_code`，不要把回调 URL 或 token 发到聊天或写入仓库：
 
-# 应用展示并核对标题、HTML 正文及发布设置后，才提交。
+```python
+import os
+from dotenv import load_dotenv
+from apis.zhihu_data_apis import ZhihuDataAPI
+from apis.zhihu_oauth import ZhihuOAuth
+
+load_dotenv()
+oauth = ZhihuOAuth(
+    os.environ["ZHIHU_OAUTH_APP_ID"],
+    os.environ["ZHIHU_OAUTH_APP_KEY"],
+    os.environ["ZHIHU_OAUTH_REDIRECT_URI"],
+)
+print(oauth.authorization_url())  # 在本机浏览器打开，并同意所申请的权限
+callback_url = input("在本机粘贴授权后的完整回调地址：").strip()
+code = oauth.authorization_code_from_callback(callback_url)
+user_token = oauth.exchange_code(code)["access_token"]
+oauth.close()
+
+data = ZhihuDataAPI(os.environ["ZHIHU_ACCESS_SECRET"])
+authorized = data.list_user_contents(oauth_token=user_token, limit=1)
+print("授权用户内容条数：", len(authorized["Items"]))
+data.close()
+```
+
+OAuth 验收需同时具备数据开放平台 Access Secret，且应用已获批“公开内容”权限。此示例只验证授权用户作品列表；`get_item()` 仍只读取 Access Secret 所属账号本人的全文。没有已发布内容时，空列表也可能是正常结果，需结合账号与授权范围判断。
+
+发布凭证获批后再构造发布客户端。应用展示并核对标题、HTML 正文及发布设置后，才提交：
+
+```python
+import os
+from dotenv import load_dotenv
+from apis.zhihu_creator_apis import ZhihuCreatorAPI
+
+load_dotenv()
 creator = ZhihuCreatorAPI(os.environ["ZHIHU_OPENAPI_APP_KEY"], os.environ["ZHIHU_OPENAPI_APP_SECRET"])
 # result = creator.publish_article("标题", "<p>正文</p>", confirmed=True)
 # print(result["data"]["url"])
@@ -73,8 +108,11 @@ creator = ZhihuCreatorAPI(os.environ["ZHIHU_OPENAPI_APP_KEY"], os.environ["ZHIHU
 媒体上传示例：
 
 ```python
+import os
+from dotenv import load_dotenv
 from apis.zhihu_media import ZhihuMediaAPI
 
+load_dotenv()
 media = ZhihuMediaAPI(os.environ["ZHIHU_OPENAPI_APP_KEY"], os.environ["ZHIHU_OPENAPI_APP_SECRET"])
 upload = media.upload_image(scene_name="article", file_path=r"C:\path\to\photo.png")
 print(upload.media_key, upload.is_success)
