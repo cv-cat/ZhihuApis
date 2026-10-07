@@ -19,9 +19,32 @@ _READ_ONLY_GET = """async (path) => {
 }"""
 
 
-class ZhihuWebAPI:
-    """借助已登录的 Playwright 页面读取网页搜索、内容和草稿计数。"""
+_JSON_WRITE = """async ({path, method, body}) => {
+    const options = {method, credentials: 'include', cache: 'no-store'};
+    if (body !== null) {
+        options.headers = {'content-type': 'application/json'};
+        options.body = JSON.stringify(body);
+    }
+    const response = await fetch(path, options);
+    const raw = await response.text();
+    let data = null;
+    try { data = JSON.parse(raw); } catch (_) {}
+    return {status: response.status, data, empty: raw.length === 0};
+}"""
 
+
+class ZhihuWebDraftSaveError(ZhihuAPIError):
+    """创建已成功，但更新或回读失败；draft_id 可用于定位残留草稿。"""
+
+    def __init__(self, message: str, *, draft_id: str) -> None:
+        super().__init__(message)
+        self.draft_id = draft_id
+
+
+class ZhihuWebAPI:
+    """借助已登录的 Playwright 页面访问实测的知乎网页接口。"""
+
+    ARTICLE_EDITOR_URL = "https://zhuanlan.zhihu.com/write"
     DRAFT_URLS = {
         "answer": "https://www.zhihu.com/draft?type=answer",
         "article": "https://www.zhihu.com/draft?type=article",
@@ -52,6 +75,36 @@ class ZhihuWebAPI:
         if not isinstance(payload, dict) or "error" in payload:
             raise ZhihuAPIError("知乎网页响应格式异常", http_status=status)
         return payload
+
+    @staticmethod
+    def _write(page, *, path: str, method: str, body: dict | None) -> dict | None:
+        if not path.startswith("/") or path.startswith("//") or method not in {"POST", "PATCH", "DELETE"}:
+            raise ValueError("写入请求参数无效")
+        result = page.evaluate(_JSON_WRITE, {"path": path, "method": method, "body": body})
+        if not isinstance(result, dict) or not isinstance(result.get("status"), int):
+            raise ZhihuAPIError("知乎网页写入响应格式异常")
+        status = result["status"]
+        payload = result.get("data")
+        if status != 200:
+            raise ZhihuAPIError("知乎网页写入失败", http_status=status)
+        if payload is None and result.get("empty") is False:
+            raise ZhihuAPIError("知乎网页写入返回非 JSON 响应", http_status=status)
+        if isinstance(payload, dict) and "error" in payload:
+            raise ZhihuAPIError("知乎网页写入业务失败", http_status=status)
+        return payload
+
+    def _zhuanlan_page(self):
+        self._www_page()
+        context = self._auth._context
+        if context is None:
+            raise RuntimeError("浏览器会话已关闭")
+        page = context.new_page()
+        try:
+            page.goto(self.ARTICLE_EDITOR_URL, wait_until="domcontentloaded")
+        except Exception:
+            page.close()
+            raise
+        return page
 
     def search(self, query: str, *, offset: int = 0, limit: int = 20) -> dict:
         """网页综合搜索，返回原始 data 与 paging；当前实测 offset 分页。"""
@@ -130,6 +183,65 @@ class ZhihuWebAPI:
                 raise ZhihuAPIError("草稿计数响应格式异常", http_status=200)
             result[kind] = payload
         return result
+
+    def save_web_draft(self, title: str, html: str) -> dict[str, str]:
+        """创建文章草稿、保存 HTML，并回读确认；不会公开发布。"""
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("草稿标题不能为空")
+        if not isinstance(html, str) or not html.strip():
+            raise ValueError("草稿正文不能为空")
+        title = title.strip()
+        page = self._zhuanlan_page()
+        try:
+            created = self._write(
+                page,
+                path="/api/articles/drafts",
+                method="POST",
+                body={"title": title, "delta_time": 0, "can_reward": False},
+            )
+            if not isinstance(created, dict) or created.get("state") != "draft" or created.get("type") != "article_draft":
+                raise ZhihuAPIError("知乎未确认创建文章草稿", http_status=200)
+            identifier = self._numeric_id(created.get("id"))
+            try:
+                self._write(
+                    page,
+                    path=f"/api/articles/{identifier}/draft",
+                    method="PATCH",
+                    body={"content": html, "table_of_contents": False, "delta_time": 0, "can_reward": False},
+                )
+                saved = self._get(page, f"/api/articles/{identifier}/draft")
+                if (
+                    saved.get("state") != "draft"
+                    or saved.get("type") != "article_draft"
+                    or str(saved.get("id")) != identifier
+                    or saved.get("title") != title
+                    or saved.get("content") != html
+                ):
+                    raise ZhihuAPIError("草稿回读内容与提交内容不一致", http_status=200)
+            except Exception as exc:
+                raise ZhihuWebDraftSaveError("草稿已创建，但正文保存或回读失败；请检查草稿箱", draft_id=identifier) from exc
+            return {"id": identifier, "state": "draft", "edit_url": f"https://zhuanlan.zhihu.com/p/{identifier}/edit"}
+        finally:
+            page.close()
+
+    def get_web_draft(self, draft_id: int | str) -> dict:
+        """只读回读本人文章草稿。"""
+        identifier = self._numeric_id(draft_id)
+        page = self._zhuanlan_page()
+        try:
+            payload = self._get(page, f"/api/articles/{identifier}/draft")
+        finally:
+            page.close()
+        if payload.get("state") != "draft" or payload.get("type") != "article_draft":
+            raise ZhihuAPIError("知乎未返回文章草稿", http_status=200)
+        return payload
+
+    def delete_web_draft(self, draft_id: int | str) -> None:
+        """删除指定文章草稿；仅接受显式传入的数字 ID。"""
+        identifier = self._numeric_id(draft_id)
+        self._write(
+            self._www_page(), path=f"/api/v4/articles/{identifier}/draft", method="DELETE", body=None
+        )
 
     @staticmethod
     def _numeric_id(value: int | str) -> str:

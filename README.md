@@ -10,6 +10,7 @@
 | 网页综合搜索 | `ZhihuWebAPI.search()` | 已登录网页的 `/api/v4/search_v3` 实测返回 200；混合结果，实测 `offset` 翻页。属于网页接口，可能随站点调整。 |
 | 网页 Item | `ZhihuWebAPI.get_item()` | 已实测回答和专栏文章返回 `content`；支持网页 URL 与搜索结果中的 `api.zhihu.com` URL。受内容权限和截断规则影响。 |
 | 网页草稿计数 | `ZhihuWebAPI.draft_counts()` | 只读读取回答、文章草稿计数；网页草稿入口为 `/draft?type=answer` 和 `/draft?type=article`。 |
+| 网页文章草稿 | `ZhihuWebAPI.save_web_draft()` / `get_web_draft()` / `delete_web_draft()` | 已实测创建、更新、回读及删除一篇文章草稿；只处理草稿，不公开发布。网页协议可能变动。 |
 | 知乎第三方登录 | `ZhihuOAuth.authorization_url()` / `exchange_code()` | 官方 OAuth 授权码流程；需申请应用凭证。 |
 | 站内搜索 | `ZhihuDataAPI.search()` | 官方数据开放平台；单次最多 10 条，当前无连续分页。 |
 | item 全文 | `ZhihuDataAPI.get_item()` | 官方“我的创作全文”；仅当前 Access Secret 所属账号的已发布作品。 |
@@ -86,9 +87,26 @@ with ZhihuBrowserAuth(profile_dir=".zhihu-browser-profile") as login:
 
 `verify_account()` 只打开知乎首页并读取浏览器内 `/api/v4/me` 的状态与用户类型；不会返回个人资料或 Cookie。`authenticated=True` 表示响应明确识别为非访客；`False` 表示明确识别为访客；`None` 表示请求被拒或响应未能识别，需要在浏览器内人工确认。已有登录的 Chrome 中实测 `/api/v4/me` 返回 200、`user_type=people`；本项目的独立 Playwright 配置仍需本人扫码验收。`profile_dir=None` 则仅在当前进程内保留会话；示例配置目录已被 Git 忽略，其中可能包含敏感会话数据，请妥善保管。关闭浏览器后，持久配置可供下一次运行继续使用，具体登录有效期由知乎决定。这里不实现二维码 HTTP 协议，也不把网页会话传给下文的官方 API 客户端。
 
-`ZhihuWebAPI` 自身调用的接口均为 GET，不导出 Cookie。打开文章页面会运行站点脚本，可能产生站点自己的埋点或浏览记录请求。网页综合搜索可能混入用户、热词、广告和内容，`paging.next` 由知乎返回；已验证通过 `offset=0`、`offset=2` 读取，长链路分页尚未验收。回答读取使用 `/api/v4/answers/{id}?include=content,...`；专栏文章在同一浏览器配置的新标签请求 `zhuanlan.zhihu.com/api/articles/{id}`，完成后关闭该标签。接口返回的 `content` 可能受付费、权限或截断限制。当前代码支持的 Item 只有回答与文章。`DRAFT_URLS` 给出已观察到的网页草稿入口；不读取或修改草稿正文。
+网页搜索、Item 和草稿计数方法调用的接口均为 GET；整个客户端不导出 Cookie。打开文章页面会运行站点脚本，可能产生站点自己的埋点或浏览记录请求。网页综合搜索可能混入用户、热词、广告和内容，`paging.next` 由知乎返回；已验证通过 `offset=0`、`offset=2` 读取，长链路分页尚未验收。回答读取使用 `/api/v4/answers/{id}?include=content,...`；专栏文章在同一浏览器配置的新标签请求 `zhuanlan.zhihu.com/api/articles/{id}`，完成后关闭该标签。接口返回的 `content` 可能受付费、权限或截断限制。当前代码支持的 Item 只有回答与文章。`DRAFT_URLS` 给出已观察到的网页草稿入口。
 
-创作菜单的“写文章”已观察到打开 `https://zhuanlan.zhihu.com/write`，初始化请求包含 `/api/v4/editor/default-settings`、`/api/v4/articles/settings` 和发布权限检查。未填写内容、保存草稿或发布作品；网页保存、上传、发布的请求契约尚未验证，因此本客户端没有这些写入方法。需要发布时使用下文已文档化的官方 Publish OpenAPI，并取得发布凭证。
+创作菜单的“写文章”打开 `https://zhuanlan.zhihu.com/write`。已用中性临时内容实测：`POST zhuanlan.zhihu.com/api/articles/drafts` 创建标题草稿，`PATCH /api/articles/{id}/draft` 保存 HTML 正文，`GET /api/articles/{id}/draft` 回读为 `state=draft`；`DELETE www.zhihu.com/api/v4/articles/{id}/draft` 返回 200，刷新草稿列表后临时草稿消失。`save_web_draft()` 按此顺序创建并回读核验。如果创建后更新或回读失败，会抛出 `ZhihuWebDraftSaveError`，其 `draft_id` 可用于检查并清理残留草稿。网页接口可能变更，先用临时内容验收自己的账号。
+
+```python
+from apis.zhihu_browser_auth import ZhihuBrowserAuth
+from apis.zhihu_web_apis import ZhihuWebAPI
+
+with ZhihuBrowserAuth(profile_dir=".zhihu-browser-profile") as login:
+    login.open_login()
+    input("本人扫码后按回车核验：")
+    if login.verify_account().authenticated is not True:
+        raise RuntimeError("账号态未确认，请在浏览器中检查")
+    web = ZhihuWebAPI(login)
+    draft = web.save_web_draft("待修改的标题", "<p>待修改的正文</p>")
+    print("草稿状态：", draft["state"])
+    # 需要清理这篇草稿时，明确调用：web.delete_web_draft(draft["id"])
+```
+
+网页写入目前仅覆盖文章草稿。没有实测网页图片/视频上传、回答或想法草稿、公开发布请求，因此没有对应方法。正式发布使用下文已文档化的官方 Publish OpenAPI，并取得发布凭证。
 
 ```python
 import os
@@ -180,6 +198,6 @@ python App.py
 python -m unittest discover -s tests -v
 ```
 
-测试用模拟 HTTP 验证官方接口的路径、参数、鉴权 Header、签名、请求体和业务错误；浏览器助手使用模拟 Playwright 验证可见窗口、会话目录及网页只读请求契约。测试本身不启动 Chrome。网页搜索、回答和文章详情、草稿计数已在已登录的 Chrome 中用客户端实际浏览器 GET 函数验证返回；Python Playwright 浏览器生命周期仍需在独立配置完成扫码后端到端验收。OAuth、上传和发布需具备对应账号权限后单独联调。
+测试用模拟 HTTP 验证官方接口的路径、参数、鉴权 Header、签名、请求体和业务错误；浏览器助手使用模拟 Playwright 验证可见窗口、会话目录、网页读写请求和错误处理。测试本身不启动 Chrome。网页搜索、回答和文章详情、草稿计数已在已登录的 Chrome 中用客户端实际浏览器 GET 函数验证；文章草稿的 UI 自动保存及同源直接创建、更新、回读、删除均实测成功，临时草稿已清理。Python Playwright 浏览器生命周期仍需在独立配置完成扫码后端到端验收。OAuth、上传和发布需具备对应账号权限后单独联调。
 
 官方来源：[数据开放平台文档](https://developer.zhihu.com/docs)、[官方 Publish OpenAPI 协议](https://github.com/zhihu/ZhihuPublisher/blob/main/zhihu-publish/reference/publish-openapi.md)、[官方媒体云 SDK](https://github.com/zhihu/zhihu-mediacloud-uploader)。

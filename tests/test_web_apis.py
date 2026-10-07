@@ -5,7 +5,7 @@ from urllib.parse import parse_qs, urlparse
 
 from apis.errors import ZhihuAPIError
 from apis.zhihu_browser_auth import ZhihuBrowserAuth
-from apis.zhihu_web_apis import ZhihuWebAPI
+from apis.zhihu_web_apis import ZhihuWebAPI, ZhihuWebDraftSaveError
 
 
 class FakePage:
@@ -14,13 +14,17 @@ class FakePage:
         self.responses = responses
         self.paths = []
         self.scripts = []
+        self.arguments = []
         self.navigations = []
         self.closed = False
 
-    def evaluate(self, script, path):
+    def evaluate(self, script, argument):
         self.scripts.append(script)
+        self.arguments.append(argument)
+        path = argument["path"] if isinstance(argument, dict) else argument
+        method = argument["method"] if isinstance(argument, dict) else "GET"
         self.paths.append(path)
-        return self.responses.get(path, {"status": 404, "data": {"error": {}}})
+        return self.responses.get((method, path), self.responses.get(path, {"status": 404, "data": {"error": {}}}))
 
     def goto(self, url, **kwargs):
         self.navigations.append((url, kwargs))
@@ -124,6 +128,65 @@ class WebApiTests(unittest.TestCase):
         client, _, _, _ = web_client({path: {"status": 200, "data": {"error": {"code": 100}}}})
         with self.assertRaises(ZhihuAPIError):
             client.search("test")
+
+    def test_save_article_draft_create_patch_and_read_back(self):
+        title, html = "temporary title", "<p>temporary body</p>"
+        client, _, editor, context = web_client(article_responses={
+            ("POST", "/api/articles/drafts"): {
+                "status": 200, "data": {"id": "77", "state": "draft", "type": "article_draft"}
+            },
+            ("PATCH", "/api/articles/77/draft"): {"status": 200, "data": None, "empty": True},
+            "/api/articles/77/draft": {
+                "status": 200,
+                "data": {"id": "77", "state": "draft", "type": "article_draft", "title": title, "content": html},
+            },
+        })
+        result = client.save_web_draft(title, html)
+        self.assertEqual(result["id"], "77")
+        self.assertEqual(result["state"], "draft")
+        self.assertEqual(context.pages_created, 1)
+        self.assertEqual(editor.navigations[0][0], ZhihuWebAPI.ARTICLE_EDITOR_URL)
+        self.assertEqual(editor.paths, ["/api/articles/drafts", "/api/articles/77/draft", "/api/articles/77/draft"])
+        self.assertEqual(editor.arguments[0]["body"], {"title": title, "delta_time": 0, "can_reward": False})
+        self.assertEqual(editor.arguments[1]["body"], {
+            "content": html, "table_of_contents": False, "delta_time": 0, "can_reward": False
+        })
+        self.assertEqual([arg["method"] for arg in editor.arguments[:2]], ["POST", "PATCH"])
+        self.assertTrue(editor.closed)
+        self.assertFalse(any("publish" in path for path in editor.paths))
+
+    def test_partial_save_exposes_draft_id_for_cleanup(self):
+        client, _, editor, _ = web_client(article_responses={
+            ("POST", "/api/articles/drafts"): {
+                "status": 200, "data": {"id": "77", "state": "draft", "type": "article_draft"}
+            },
+            ("PATCH", "/api/articles/77/draft"): {"status": 403, "data": {"error": {"code": 403}}},
+        })
+        with self.assertRaises(ZhihuWebDraftSaveError) as caught:
+            client.save_web_draft("title", "<p>body</p>")
+        self.assertEqual(caught.exception.draft_id, "77")
+        self.assertTrue(editor.closed)
+        self.assertEqual(editor.paths, ["/api/articles/drafts", "/api/articles/77/draft"])
+
+    def test_read_and_delete_explicit_article_draft(self):
+        draft = {"id": "77", "state": "draft", "type": "article_draft", "content": "<p>body</p>"}
+        client, www, editor, _ = web_client(
+            www_responses={("DELETE", "/api/v4/articles/77/draft"): {"status": 200, "data": None, "empty": True}},
+            article_responses={"/api/articles/77/draft": {"status": 200, "data": draft}},
+        )
+        self.assertEqual(client.get_web_draft(77), draft)
+        self.assertTrue(editor.closed)
+        client.delete_web_draft(77)
+        self.assertEqual(www.arguments[-1], {"path": "/api/v4/articles/77/draft", "method": "DELETE", "body": None})
+        self.assertNotIn("document.cookie", www.scripts[-1])
+        with self.assertRaises(ValueError):
+            client.delete_web_draft("77/../../1")
+
+        client, _, _, _ = web_client(www_responses={
+            ("DELETE", "/api/v4/articles/77/draft"): {"status": 200, "data": None, "empty": False}
+        })
+        with self.assertRaises(ZhihuAPIError):
+            client.delete_web_draft(77)
 
 
 if __name__ == "__main__":
