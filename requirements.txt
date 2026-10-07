@@ -1,4 +1,5 @@
 fastapi==0.115.12
 uvicorn==0.34.0
 requests==2.32.3
+python-dotenv==1.2.4
 PyExecJS==1.5.1

@@ -29,3 +29,6 @@ ENV/
 env.bak/
 venv.bak/
 datas
+.env
+.zhihu-publish-output/
+.zhihu-browser-profile/

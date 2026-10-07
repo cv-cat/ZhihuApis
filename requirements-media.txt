@@ -1,0 +1,2 @@
+# 可选。知乎官方媒体云 SDK，固定到已核对的 main 提交。
+zhihu-mediacloud-uploader @ git+https://github.com/zhihu/zhihu-mediacloud-uploader.git@c136afd14f64a824e479168b467727fca424dc5d
