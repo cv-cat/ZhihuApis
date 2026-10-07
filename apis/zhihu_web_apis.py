@@ -1,45 +1,25 @@
-"""本人浏览器会话中的知乎网页只读接口；不导出 Cookie。"""
+"""知乎网页接口的纯 HTTP 客户端。
+
+请求通过注入的 ``requests.Session`` 发出，复用其 Cookie、CSRF Cookie 和
+会话 Header。接口路径来自知乎网页当前实测请求；本模块不创建窗口、不执
+行页面脚本，也不把登录凭据写入文件。
+"""
 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from typing import Any
 from urllib.parse import urlencode, urlparse
 
+import requests
+
 from apis.errors import ZhihuAPIError
-from apis.zhihu_browser_auth import ZhihuBrowserAuth
+from apis.zhihu_http_auth import BASE_URL, ZhihuHTTPAuth
 
 
-_READ_ONLY_GET = """async (path) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
-    let response;
-    try {
-        response = await fetch(path, {
-            method: 'GET', credentials: 'include', cache: 'no-store', signal: controller.signal
-        });
-    } catch (_) {
-        return {status: 0, data: {error: {code: 'timeout_or_network'}}};
-    } finally {
-        clearTimeout(timer);
-    }
-    let data = null;
-    try { data = await response.json(); } catch (_) {}
-    return {status: response.status, data};
-}"""
-
-
-_JSON_WRITE = """async ({path, method, body}) => {
-    const options = {method, credentials: 'include', cache: 'no-store'};
-    if (body !== null) {
-        options.headers = {'content-type': 'application/json'};
-        options.body = JSON.stringify(body);
-    }
-    const response = await fetch(path, options);
-    const raw = await response.text();
-    let data = null;
-    try { data = JSON.parse(raw); } catch (_) {}
-    return {status: response.status, data, empty: raw.length === 0};
-}"""
+WWW_URL = BASE_URL
+ZHUANLAN_URL = "https://zhuanlan.zhihu.com"
 
 
 class ZhihuWebDraftSaveError(ZhihuAPIError):
@@ -51,74 +31,105 @@ class ZhihuWebDraftSaveError(ZhihuAPIError):
 
 
 class ZhihuWebAPI:
-    """借助已登录的 Playwright 页面访问实测的知乎网页接口。"""
+    """使用纯 HTTP 会话访问知乎网页搜索、内容和文章草稿接口。"""
 
-    ARTICLE_EDITOR_URL = "https://zhuanlan.zhihu.com/write"
+    ARTICLE_EDITOR_URL = f"{ZHUANLAN_URL}/write"
     DRAFT_URLS = {
-        "answer": "https://www.zhihu.com/draft?type=answer",
-        "article": "https://www.zhihu.com/draft?type=article",
+        "answer": f"{WWW_URL}/draft?type=answer",
+        "article": f"{WWW_URL}/draft?type=article",
     }
 
-    def __init__(self, browser_auth: ZhihuBrowserAuth) -> None:
-        if not isinstance(browser_auth, ZhihuBrowserAuth):
-            raise TypeError("browser_auth 必须是 ZhihuBrowserAuth")
-        self._auth = browser_auth
+    def __init__(
+        self,
+        auth: ZhihuHTTPAuth | requests.Session | Any,
+        *,
+        session: requests.Session | Any | None = None,
+        timeout: float = 20,
+    ) -> None:
+        if timeout <= 0:
+            raise ValueError("timeout 必须大于 0")
+        candidate = session or getattr(auth, "session", None) or auth
+        if not hasattr(candidate, "request"):
+            raise TypeError("auth 必须是 ZhihuHTTPAuth 或 requests.Session")
+        self._auth = auth if isinstance(auth, ZhihuHTTPAuth) else None
+        self._session = candidate
+        self.timeout = float(timeout)
+        if hasattr(self._session, "headers"):
+            self._session.headers.setdefault("Accept", "application/json, text/plain, */*")
 
-    def _www_page(self):
-        page = self._auth._page
-        if page is None or urlparse(getattr(page, "url", "")).netloc != "www.zhihu.com":
-            raise RuntimeError("请先调用 browser_auth.open_login() 并完成扫码")
-        return page
+    @property
+    def session(self):
+        return self._session
 
-    @staticmethod
-    def _get(page, path: str) -> dict:
-        if not path.startswith("/") or path.startswith("//"):
+    def _url(self, path: str, *, host: str = WWW_URL) -> str:
+        if not isinstance(path, str) or not path.startswith("/") or path.startswith("//"):
             raise ValueError("只允许站内相对路径")
-        result = page.evaluate(_READ_ONLY_GET, path)
-        if not isinstance(result, dict) or not isinstance(result.get("status"), int):
-            raise ZhihuAPIError("知乎网页响应格式异常")
-        status = result["status"]
-        payload = result.get("data")
-        if status != 200:
-            raise ZhihuAPIError("知乎网页读取失败", http_status=status)
-        if not isinstance(payload, dict) or "error" in payload:
-            raise ZhihuAPIError("知乎网页响应格式异常", http_status=status)
-        return payload
+        return f"{host}{path}"
+
+    def _xsrf_header(self) -> dict[str, str]:
+        cookies = getattr(self._session, "cookies", None)
+        if cookies is None or not hasattr(cookies, "get"):
+            return {}
+        try:
+            value = cookies.get("_xsrf") or cookies.get("xsrf")
+        except (KeyError, TypeError):
+            value = None
+        return {"X-Xsrftoken": str(value)} if value else {}
+
+    def _request(self, method: str, path: str, *, host: str = WWW_URL, **kwargs):
+        kwargs.setdefault("timeout", self.timeout)
+        kwargs.setdefault("allow_redirects", False)
+        return self._session.request(method, self._url(path, host=host), **kwargs)
 
     @staticmethod
-    def _write(page, *, path: str, method: str, body: dict | None) -> dict | None:
-        if not path.startswith("/") or path.startswith("//") or method not in {"POST", "PATCH", "DELETE"}:
-            raise ValueError("写入请求参数无效")
-        result = page.evaluate(_JSON_WRITE, {"path": path, "method": method, "body": body})
-        if not isinstance(result, dict) or not isinstance(result.get("status"), int):
-            raise ZhihuAPIError("知乎网页写入响应格式异常")
-        status = result["status"]
-        payload = result.get("data")
-        if status != 200:
-            raise ZhihuAPIError("知乎网页写入失败", http_status=status)
-        if payload is None and result.get("empty") is False:
-            raise ZhihuAPIError("知乎网页写入返回非 JSON 响应", http_status=status)
-        if isinstance(payload, dict) and "error" in payload:
-            raise ZhihuAPIError("知乎网页写入业务失败", http_status=status)
+    def _payload(response, label: str, *, allow_empty: bool = False):
+        try:
+            return response.json()
+        except (TypeError, ValueError) as exc:
+            raw = getattr(response, "text", "")
+            if allow_empty and not raw:
+                return None
+            raise ZhihuAPIError(f"{label}返回非 JSON 响应", http_status=getattr(response, "status_code", None)) from exc
+
+    @staticmethod
+    def _error(message: str, response, payload: Any = None) -> ZhihuAPIError:
+        error = payload.get("error") if isinstance(payload, Mapping) else None
+        code = None
+        if isinstance(error, Mapping):
+            message = str(error.get("message") or message)
+            code = error.get("code") if type(error.get("code")) is int else None
+        elif isinstance(payload, Mapping):
+            message = str(payload.get("message") or payload.get("msg") or message)
+            code = payload.get("code") if type(payload.get("code")) is int else None
+        return ZhihuAPIError(message, code=code, http_status=getattr(response, "status_code", None))
+
+    def _get(self, path: str, *, host: str = WWW_URL) -> dict:
+        response = self._request("GET", path, host=host, headers=self._xsrf_header())
+        payload = self._payload(response, "知乎网页读取接口")
+        if response.status_code != 200:
+            raise self._error("知乎网页读取失败", response, payload)
+        if not isinstance(payload, dict) or "error" in payload:
+            raise self._error("知乎网页响应格式异常", response, payload)
         return payload
 
-    def _zhuanlan_page(self):
-        self._www_page()
-        context = self._auth._context
-        if context is None:
-            raise RuntimeError("浏览器会话已关闭")
-        page = context.new_page()
-        try:
-            if hasattr(page, "set_default_navigation_timeout"):
-                page.set_default_navigation_timeout(15000)
-            page.goto(self.ARTICLE_EDITOR_URL, wait_until="domcontentloaded")
-        except Exception:
-            page.close()
-            raise
-        return page
+    def _write(self, *, path: str, method: str, body: dict | None, host: str = WWW_URL):
+        if method not in {"POST", "PATCH", "DELETE"}:
+            raise ValueError("写入方法无效")
+        headers = {"Accept": "application/json, text/plain, */*", **self._xsrf_header()}
+        kwargs: dict[str, Any] = {"headers": headers}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            kwargs["json"] = body
+        response = self._request(method, path, host=host, **kwargs)
+        payload = self._payload(response, "知乎网页写入接口", allow_empty=True)
+        if not 200 <= response.status_code < 300:
+            raise self._error("知乎网页写入失败", response, payload)
+        if isinstance(payload, dict) and "error" in payload:
+            raise self._error("知乎网页写入业务失败", response, payload)
+        return payload
 
     def search(self, query: str, *, offset: int = 0, limit: int = 20) -> dict:
-        """网页综合搜索，返回原始 data 与 paging；当前实测 offset 分页。"""
+        """网页综合搜索，返回原始 ``data`` 与 ``paging``。"""
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query 不能为空")
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
@@ -128,62 +139,30 @@ class ZhihuWebAPI:
         path = "/api/v4/search_v3?" + urlencode(
             {"t": "general", "q": query.strip(), "offset": offset, "limit": limit, "search_source": "Normal"}
         )
-        payload = self._get(self._www_page(), path)
+        payload = self._get(path)
         if not isinstance(payload.get("data"), list) or not isinstance(payload.get("paging"), dict):
             raise ZhihuAPIError("知乎搜索响应缺少 data 或 paging", http_status=200)
         return payload
 
     def get_answer(self, answer_id: int | str) -> dict:
-        """读取公开回答网页接口当前返回的 content 字段。"""
+        """读取回答正文。"""
         identifier = self._numeric_id(answer_id)
         path = f"/api/v4/answers/{identifier}?include=content%2Cexcerpt%2Cquestion%2Cauthor"
-        payload = self._get(self._www_page(), path)
+        payload = self._get(path)
         if not isinstance(payload.get("content"), str):
             raise ZhihuAPIError("回答响应缺少 content", http_status=200)
         return payload
 
     def get_article(self, article_id: int | str) -> dict:
-        """在同一浏览器会话读取专栏文章网页接口。"""
-        self._www_page()
+        """从专栏接口读取文章正文。"""
         identifier = self._numeric_id(article_id)
-        context = self._auth._context
-        if context is None:
-            raise RuntimeError("浏览器会话已关闭")
-
-        # BrowserContext.request shares the context cookies and avoids waiting
-        # for the full zhuanlan document (which can retain long-lived media
-        # tasks). Prefer it for the JSON endpoint; keep the page path as a
-        # compatibility fallback for lightweight test doubles and deployments
-        # where the request context is unavailable.
-        request_context = getattr(context, "request", None)
-        if request_context is not None:
-            try:
-                response = request_context.get(
-                    f"https://zhuanlan.zhihu.com/api/articles/{identifier}",
-                    timeout=15000,
-                    headers={"Accept": "application/json"},
-                )
-                if response.status == 200:
-                    payload = response.json()
-                    if isinstance(payload, dict) and isinstance(payload.get("content"), str):
-                        return payload
-            except Exception:
-                pass
-
-        page = context.new_page()
-        try:
-            if hasattr(page, "set_default_navigation_timeout"):
-                page.set_default_navigation_timeout(15000)
-            page.goto(f"https://zhuanlan.zhihu.com/p/{identifier}", wait_until="domcontentloaded")
-            payload = self._get(page, f"/api/articles/{identifier}")
-        finally:
-            self._close_probe_page(page)
+        payload = self._get(f"/api/articles/{identifier}", host=ZHUANLAN_URL)
         if not isinstance(payload.get("content"), str):
             raise ZhihuAPIError("文章响应缺少 content", http_status=200)
         return payload
 
     def get_item(self, content_url: str) -> dict:
-        """支持实测的网页回答/文章 URL，以及搜索结果中的 api.zhihu.com URL。"""
+        """支持回答、专栏文章和对应 API URL。"""
         if not isinstance(content_url, str):
             raise ValueError("需要知乎内容 URL")
         parsed = urlparse(content_url)
@@ -205,91 +184,66 @@ class ZhihuWebAPI:
         raise ValueError("当前只支持回答或文章内容 URL")
 
     def draft_counts(self) -> dict[str, dict]:
-        """只读获取回答和文章草稿计数，不打开或修改草稿。"""
-        page = self._www_page()
+        """读取回答和文章草稿计数。"""
         result = {}
         for kind, path in (
             ("answer", "/api/v4/answer-drafts/count"),
             ("article", "/api/v4/articles/my_drafts/count"),
         ):
-            payload = self._get(page, path)
+            payload = self._get(path)
             if isinstance(payload.get("count"), bool) or not isinstance(payload.get("count"), int):
                 raise ZhihuAPIError("草稿计数响应格式异常", http_status=200)
             result[kind] = payload
         return result
 
     def save_web_draft(self, title: str, html: str) -> dict[str, str]:
-        """创建文章草稿、保存 HTML，并回读确认；不会公开发布。"""
+        """创建文章草稿、保存 HTML 并回读确认；不会公开发布。"""
         if not isinstance(title, str) or not title.strip():
             raise ValueError("草稿标题不能为空")
         if not isinstance(html, str) or not html.strip():
             raise ValueError("草稿正文不能为空")
         title = title.strip()
-        page = self._zhuanlan_page()
+        created = self._write(
+            path="/api/articles/drafts",
+            host=ZHUANLAN_URL,
+            method="POST",
+            body={"title": title, "delta_time": 0, "can_reward": False},
+        )
+        if not isinstance(created, dict) or created.get("state") != "draft" or created.get("type") != "article_draft":
+            raise ZhihuAPIError("知乎未确认创建文章草稿", http_status=200)
+        identifier = self._numeric_id(created.get("id"))
         try:
-            created = self._write(
-                page,
-                path="/api/articles/drafts",
-                method="POST",
-                body={"title": title, "delta_time": 0, "can_reward": False},
+            self._write(
+                path=f"/api/articles/{identifier}/draft",
+                host=ZHUANLAN_URL,
+                method="PATCH",
+                body={"content": html, "table_of_contents": False, "delta_time": 0, "can_reward": False},
             )
-            if not isinstance(created, dict) or created.get("state") != "draft" or created.get("type") != "article_draft":
-                raise ZhihuAPIError("知乎未确认创建文章草稿", http_status=200)
-            identifier = self._numeric_id(created.get("id"))
-            try:
-                self._write(
-                    page,
-                    path=f"/api/articles/{identifier}/draft",
-                    method="PATCH",
-                    body={"content": html, "table_of_contents": False, "delta_time": 0, "can_reward": False},
-                )
-                saved = self._get(page, f"/api/articles/{identifier}/draft")
-                if (
-                    saved.get("state") != "draft"
-                    or saved.get("type") != "article_draft"
-                    or str(saved.get("id")) != identifier
-                    or saved.get("title") != title
-                    or saved.get("content") != html
-                ):
-                    raise ZhihuAPIError("草稿回读内容与提交内容不一致", http_status=200)
-            except Exception as exc:
-                raise ZhihuWebDraftSaveError("草稿已创建，但正文保存或回读失败；请检查草稿箱", draft_id=identifier) from exc
-            return {"id": identifier, "state": "draft", "edit_url": f"https://zhuanlan.zhihu.com/p/{identifier}/edit"}
-        finally:
-            self._close_probe_page(page)
+            saved = self._get(f"/api/articles/{identifier}/draft", host=ZHUANLAN_URL)
+            if (
+                saved.get("state") != "draft"
+                or saved.get("type") != "article_draft"
+                or str(saved.get("id")) != identifier
+                or saved.get("title") != title
+                or saved.get("content") != html
+            ):
+                raise ZhihuAPIError("草稿回读内容与提交内容不一致", http_status=200)
+        except Exception as exc:
+            raise ZhihuWebDraftSaveError("草稿已创建，但正文保存或回读失败；请检查草稿箱", draft_id=identifier) from exc
+        return {"id": identifier, "state": "draft", "edit_url": f"{ZHUANLAN_URL}/p/{identifier}/edit"}
 
     def get_web_draft(self, draft_id: int | str) -> dict:
-        """只读回读本人文章草稿。"""
+        """回读本人文章草稿。"""
         identifier = self._numeric_id(draft_id)
-        page = self._zhuanlan_page()
-        try:
-            payload = self._get(page, f"/api/articles/{identifier}/draft")
-        finally:
-            self._close_probe_page(page)
+        payload = self._get(f"/api/articles/{identifier}/draft", host=ZHUANLAN_URL)
         if payload.get("state") != "draft" or payload.get("type") != "article_draft":
             raise ZhihuAPIError("知乎未返回文章草稿", http_status=200)
         return payload
 
     def delete_web_draft(self, draft_id: int | str) -> None:
-        """删除指定文章草稿；仅接受显式传入的数字 ID。"""
+        """删除指定文章草稿。"""
         identifier = self._numeric_id(draft_id)
-        self._write(
-            self._www_page(), path=f"/api/v4/articles/{identifier}/draft", method="DELETE", body=None
-        )
-
-    @staticmethod
-    def _close_probe_page(page) -> None:
-        """Bound cleanup for pages that can retain navigation tasks."""
-        try:
-            page.close(timeout=5000)
-        except TypeError:
-            # Small fake pages used by the contract tests have no timeout arg.
-            try:
-                page.close()
-            except Exception:
-                pass
-        except Exception:
-            pass
+        self._write(path=f"/api/v4/articles/{identifier}/draft", method="DELETE", body=None)
 
     @staticmethod
     def _numeric_id(value: int | str) -> str:
