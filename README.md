@@ -85,7 +85,7 @@ with ZhihuBrowserAuth(profile_dir=".zhihu-browser-profile") as login:
         counts = web.draft_counts()  # 只读；含 answer / article 计数
 ```
 
-`verify_account()` 只打开知乎首页并读取浏览器内 `/api/v4/me` 的状态与用户类型；不会返回个人资料或 Cookie。`authenticated=True` 表示响应明确识别为非访客；`False` 表示明确识别为访客；`None` 表示请求被拒或响应未能识别，需要在浏览器内人工确认。已有登录的 Chrome 中实测 `/api/v4/me` 返回 200、`user_type=people`；本项目的独立 Playwright 配置仍需本人扫码验收。`profile_dir=None` 则仅在当前进程内保留会话；示例配置目录已被 Git 忽略，其中可能包含敏感会话数据，请妥善保管。关闭浏览器后，持久配置可供下一次运行继续使用，具体登录有效期由知乎决定。这里不实现二维码 HTTP 协议，也不把网页会话传给下文的官方 API 客户端。
+`verify_account()` 只打开知乎首页并读取浏览器内 `/api/v4/me` 的状态与用户类型；不会返回个人资料或 Cookie。`authenticated=True` 表示响应明确识别为非访客；`False` 表示明确识别为访客；`None` 表示请求被拒或响应未能识别，需要在浏览器内人工确认。已有登录的 Chrome 中实测 `/api/v4/me` 返回 200、`user_type=people`；独立 `ZhihuBrowserAuth` 可见窗口也已实际扫码确认，并完成一次登录 → 搜索 → 回答详情调用。`profile_dir=None` 则仅在当前进程内保留会话；示例配置目录已被 Git 忽略，其中可能包含敏感会话数据，请妥善保管。关闭浏览器后，持久配置可供下一次运行继续使用，具体登录有效期由知乎决定。这里不实现二维码 HTTP 协议，也不把网页会话传给下文的官方 API 客户端。
 
 若要用本人已登录 Chrome 的 Cookie 在仓库代码中验收，可以通过隐藏输入导入临时浏览器上下文。`import_cookie_header()` 仅允许 `profile_dir=None`，不将 Cookie 写入项目文件，也不在异常中回显。关闭上下文即清除临时会话。不要把 Cookie 放进命令参数、源码、日志或聊天消息。
 
@@ -105,7 +105,7 @@ with ZhihuBrowserAuth(headless=True) as login:
     print("结果数：", len(results["data"]))
 ```
 
-这条临时 Cookie 导入链已通过离线契约测试；独立 Chrome 中的真实仓库级调用需另行联调。
+这条临时 Cookie 导入链已通过离线契约测试；独立可见窗口的真实仓库级回答调用已联调。专栏文章详情使用新标签，网络请求和导航均有超时；若站点保持导航任务，调用会返回有界错误而不会长期阻塞。
 
 网页搜索、Item 和草稿计数方法调用的接口均为 GET；整个客户端不导出 Cookie。打开文章页面会运行站点脚本，可能产生站点自己的埋点或浏览记录请求。网页综合搜索可能混入用户、热词、广告和内容，`paging.next` 由知乎返回；已验证通过 `offset=0`、`offset=2` 读取，长链路分页尚未验收。回答读取使用 `/api/v4/answers/{id}?include=content,...`；专栏文章在同一浏览器配置的新标签请求 `zhuanlan.zhihu.com/api/articles/{id}`，完成后关闭该标签。接口返回的 `content` 可能受付费、权限或截断限制。当前代码支持的 Item 只有回答与文章。`DRAFT_URLS` 给出已观察到的网页草稿入口。
 
