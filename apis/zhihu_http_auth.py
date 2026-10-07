@@ -17,6 +17,7 @@ from urllib.parse import urljoin
 import requests
 
 from apis.errors import UnsupportedCapabilityError, ZhihuAPIError
+from apis.zhihu_signing import ZhihuWebSigner
 
 BASE_URL = "https://www.zhihu.com"
 SIGNIN_URL = f"{BASE_URL}/signin?next=%2F"
@@ -34,7 +35,7 @@ CAPTCHA_URL = f"{BASE_URL}/api/v3/oauth/captcha/v2"
 _COOKIE_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 _DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
 )
 
 
@@ -102,6 +103,8 @@ class ZhihuHTTPAuth:
         timeout: float = 20,
         user_agent: str = _DEFAULT_UA,
         body_encryptor: Callable[[Mapping[str, Any]], tuple[str, Mapping[str, str]]] | None = None,
+        signer: ZhihuWebSigner | None = None,
+        auto_sign: bool = True,
     ) -> None:
         if timeout <= 0:
             raise ValueError("timeout 必须大于 0")
@@ -110,6 +113,11 @@ class ZhihuHTTPAuth:
         self._session = session if session is not None else requests.Session()
         self.timeout = float(timeout)
         self._body_encryptor = body_encryptor
+        # 真正的 requests.Session 默认启用网页签名；测试替身或调用方
+        # 注入的自定义 session 需显式传 signer，避免离线测试加载 Node。
+        self._signer = signer if signer is not None else (
+            ZhihuWebSigner() if auto_sign and isinstance(self._session, requests.Session) else None
+        )
         self._duid = None
         headers = {
             "User-Agent": user_agent,
@@ -119,6 +127,16 @@ class ZhihuHTTPAuth:
             "Origin": BASE_URL,
             "X-Requested-With": "fetch",
         }
+        match = re.search(r"Chrome/(\d+)", user_agent)
+        if match:
+            version = match.group(1)
+            headers.update(
+                {
+                    "sec-ch-ua": f'"Chromium";v="{version}", "Google Chrome";v="{version}", "Not A(Brand";v="99"',
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": '"Windows"',
+                }
+            )
         if hasattr(self._session, "headers"):
             self._session.headers.update(headers)
         if cookie_header is not None:
@@ -169,7 +187,11 @@ class ZhihuHTTPAuth:
 
     def open_login(self):
         """用 HTTP 读取登录页，返回 ``requests.Response``；不启动任何窗口。"""
-        return self._request("GET", SIGNIN_URL, allow_redirects=False)
+        response = self._request("GET", SIGNIN_URL, allow_redirects=False, _skip_signature=True)
+        location = getattr(response, "headers", {}).get("Location")
+        if location and hasattr(self._session, "headers"):
+            self._session.headers["Referer"] = urljoin(BASE_URL, location)
+        return response
 
     def login_state(self) -> LoginState:
         response = self._request("GET", ME_URL, allow_redirects=False)
@@ -437,8 +459,57 @@ class ZhihuHTTPAuth:
         return encrypted, {str(key): str(value) for key, value in headers.items()}
 
     def _request(self, method: str, url: str, **kwargs):
+        skip_signature = bool(kwargs.pop("_skip_signature", False))
+        if self._signer is not None and not skip_signature:
+            request_headers = dict(kwargs.get("headers") or {})
+            # 使用 requests.Prepare 得到和真实请求相同的 query/body 字符串，
+            # 再把签名 Header 放回原请求；不会发送这次预备请求。
+            prepared = requests.Request(
+                method=method,
+                url=url,
+                params=kwargs.get("params"),
+                data=kwargs.get("data"),
+                json=kwargs.get("json"),
+                headers=request_headers,
+            ).prepare()
+            d_c0 = self._cookie_value("d_c0")
+            x_zst_81 = request_headers.get("x-zst-81") or request_headers.get("X-Zst-81")
+            request_headers.update(
+                self._signer.headers(
+                    prepared.url,
+                    d_c0=d_c0,
+                    body=prepared.body,
+                    x_zst_81=x_zst_81,
+                )
+            )
+            xsrf = self._cookie_value("_xsrf") or self._cookie_value("xsrf")
+            if xsrf:
+                request_headers.setdefault("x-xsrftoken", xsrf)
+            kwargs["headers"] = request_headers
         kwargs.setdefault("timeout", self.timeout)
         return self._session.request(method, url, **kwargs)
+
+    def request(self, method: str, url: str, **kwargs):
+        """供其他纯 HTTP API 复用同一签名和 Cookie 会话。"""
+        return self._request(method, url, **kwargs)
+
+    def _cookie_value(self, name: str) -> str | None:
+        cookies = getattr(self._session, "cookies", None)
+        if cookies is None:
+            return None
+        try:
+            value = cookies.get(name)
+            if value:
+                return str(value)
+        except (KeyError, TypeError, requests.cookies.CookieConflictError):
+            pass
+        try:
+            for cookie in cookies:
+                if getattr(cookie, "name", None) == name and getattr(cookie, "value", None):
+                    return str(cookie.value)
+        except TypeError:
+            return None
+        return None
 
     @staticmethod
     def _json(response, label: str):

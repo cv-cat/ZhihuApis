@@ -7,7 +7,7 @@
 
 | 模块 | 能力 | 认证材料 |
 | --- | --- | --- |
-| `apis.zhihu_http_auth.ZhihuHTTPAuth` | Cookie 会话、二维码 token、扫码状态、账号探针、官方验证码票据、短信/密码登录请求 | 本人 Cookie，或用户在知乎 App 扫码；短信和密码请求需要当前网页产生的 `zsEncrypt` body |
+| `apis.zhihu_http_auth.ZhihuHTTPAuth` | Cookie 会话、二维码 token、扫码状态、账号探针、官方验证码票据、短信/密码登录请求；自动补网页 `x-zse-93/x-zse-96` | 本人 Cookie，或用户在知乎 App 扫码；短信和密码请求需要当前网页产生的 `zsEncrypt` body |
 | `apis.zhihu_web_apis.ZhihuWebAPI` | 搜索、回答/文章详情、草稿计数、文章草稿创建/更新/回读/删除 | `ZhihuHTTPAuth` 的 `requests.Session` |
 | `apis.zhihu_data_apis.ZhihuDataAPI` | 官方内容搜索、本人作品详情、本人作品列表、问题回答摘要 | 开发者中心 Access Secret；用户列表可附 OAuth token |
 | `apis.zhihu_oauth.ZhihuOAuth` | OAuth 授权地址、回调校验、授权码换 token | 申请到的 `app_id`、`app_key`、注册回调地址 |
@@ -51,6 +51,23 @@ with ZhihuHTTPAuth.from_cookie(cookie) as auth:
 `verify_account()` 只在 `/api/v4/me` 返回 200 且 `user_type` 明确为非
 `guest` 时报告 `authenticated=True`。401、403 或无法识别的响应会保留为
 未知态，不会把 HTTP 成功误判成已登录。
+
+## 网页签名（纯 HTTP）
+
+`ZhihuHTTPAuth` 默认使用从当前 `static/other.js` module 1514 提取的纯
+Python SM4/CBC 实现生成网页请求的 `x-zse-96`，不会创建浏览器或发送预备
+请求。签名源按当前脚本固定为：
+
+```text
+101_3_3.0 + pathname?query + d_c0 + body(UTF-8 <= 4096) + x-zst-81
+```
+
+非空字段以 `+` 连接，先计算 UTF-8 MD5，再由 `apis.zhihu_zse_pure` 加密，
+最终发送 `x-zse-93: 101_3_3.0` 与 `x-zse-96: 2.0_<signature>`。签名实现位于
+`apis.zhihu_signing.ZhihuWebSigner`；`ZhihuWebAPI` 复用同一个 Auth 会话，
+因此搜索、详情和草稿请求也走同一签名链。若要与网页脚本做版本对照，可
+显式设置 `ZhihuWebSigner(use_pure=False)`（需要 `jsdom`）；也可以注入
+`ZhihuWebSigner(encryptor=...)` 做测试。
 
 ## 二维码登录（纯 HTTP）
 

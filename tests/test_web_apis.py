@@ -53,7 +53,7 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(method, "GET")
         self.assertEqual(urlparse(url).path, "/api/v4/search_v3")
         self.assertEqual(parse_qs(urlparse(url).query)["q"], ["咖啡"])
-        self.assertEqual(kwargs["headers"]["X-Xsrftoken"], "csrf")
+        self.assertEqual(kwargs["headers"]["x-xsrftoken"], "csrf")
         with self.assertRaises(ValueError):
             client.search("咖啡", limit=21)
 
@@ -139,3 +139,4 @@ class WebApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

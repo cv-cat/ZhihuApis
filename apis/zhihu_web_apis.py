@@ -79,12 +79,15 @@ class ZhihuWebAPI:
             value = cookies.get("_xsrf") or cookies.get("xsrf")
         except (KeyError, TypeError):
             value = None
-        return {"X-Xsrftoken": str(value)} if value else {}
+        return {"x-xsrftoken": str(value)} if value else {}
 
     def _request(self, method: str, path: str, *, host: str = WWW_URL, **kwargs):
         kwargs.setdefault("timeout", self.timeout)
         kwargs.setdefault("allow_redirects", False)
-        return self._session.request(method, self._url(path, host=host), **kwargs)
+        url = self._url(path, host=host)
+        if self._auth is not None:
+            return self._auth.request(method, url, **kwargs)
+        return self._session.request(method, url, **kwargs)
 
     @staticmethod
     def _payload(response, label: str, *, allow_empty: bool = False):
