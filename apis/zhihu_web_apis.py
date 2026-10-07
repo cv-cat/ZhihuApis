@@ -143,12 +143,33 @@ class ZhihuWebAPI:
         return payload
 
     def get_article(self, article_id: int | str) -> dict:
-        """在同一浏览器配置的新标签读取专栏文章网页接口。"""
+        """在同一浏览器会话读取专栏文章网页接口。"""
         self._www_page()
         identifier = self._numeric_id(article_id)
         context = self._auth._context
         if context is None:
             raise RuntimeError("浏览器会话已关闭")
+
+        # BrowserContext.request shares the context cookies and avoids waiting
+        # for the full zhuanlan document (which can retain long-lived media
+        # tasks). Prefer it for the JSON endpoint; keep the page path as a
+        # compatibility fallback for lightweight test doubles and deployments
+        # where the request context is unavailable.
+        request_context = getattr(context, "request", None)
+        if request_context is not None:
+            try:
+                response = request_context.get(
+                    f"https://zhuanlan.zhihu.com/api/articles/{identifier}",
+                    timeout=15000,
+                    headers={"Accept": "application/json"},
+                )
+                if response.status == 200:
+                    payload = response.json()
+                    if isinstance(payload, dict) and isinstance(payload.get("content"), str):
+                        return payload
+            except Exception:
+                pass
+
         page = context.new_page()
         try:
             if hasattr(page, "set_default_navigation_timeout"):
