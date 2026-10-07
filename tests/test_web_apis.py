@@ -44,6 +44,29 @@ class FakeContext:
         return self.article_page
 
 
+class FakeResponse:
+    status = 200
+
+    @staticmethod
+    def json():
+        return {"id": "77", "type": "article", "content": "<p>request article</p>"}
+
+
+class FakeRequestContext:
+    def __init__(self):
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return FakeResponse()
+
+
+class FakeContextWithRequest(FakeContext):
+    def __init__(self, article_page):
+        super().__init__(article_page)
+        self.request = FakeRequestContext()
+
+
 def web_client(www_responses=None, article_responses=None):
     www = FakePage("https://www.zhihu.com/", www_responses or {})
     article = FakePage("about:blank", article_responses or {})
@@ -90,6 +113,21 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(article.paths, ["/api/articles/77"])
         self.assertTrue(article.closed)
         self.assertEqual(www.paths, [])
+
+    def test_article_item_prefers_context_request(self):
+        www = FakePage("https://www.zhihu.com/", {})
+        article = FakePage("about:blank", {})
+        context = FakeContextWithRequest(article)
+        auth = object.__new__(ZhihuBrowserAuth)
+        auth._page = www
+        auth._context = context
+        client = ZhihuWebAPI(auth)
+
+        item = client.get_item("https://api.zhihu.com/articles/77")
+
+        self.assertEqual(item["content"], "<p>request article</p>")
+        self.assertEqual(context.pages_created, 0)
+        self.assertEqual(context.request.calls[0][0], "https://zhuanlan.zhihu.com/api/articles/77")
 
     def test_draft_counts_use_observed_read_only_paths(self):
         client, www, _, _ = web_client({
