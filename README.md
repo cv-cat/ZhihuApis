@@ -6,6 +6,7 @@
 
 | 能力 | 入口 | 状态与范围 |
 | --- | --- | --- |
+| 本人网页扫码登录 | `ZhihuBrowserAuth.open_login()` / `verify_account()` | 可见浏览器展示知乎自己的二维码；本人扫码。会话保存在内存或独立浏览器配置中；只读核验账号态，不生成 OAuth token。真实账号扫码尚待验收。 |
 | 知乎第三方登录 | `ZhihuOAuth.authorization_url()` / `exchange_code()` | 官方 OAuth 授权码流程；需申请应用凭证。 |
 | 站内搜索 | `ZhihuDataAPI.search()` | 官方数据开放平台；单次最多 10 条，当前无连续分页。 |
 | item 全文 | `ZhihuDataAPI.get_item()` | 官方“我的创作全文”；仅当前 Access Secret 所属账号的已发布作品。 |
@@ -24,6 +25,14 @@ Python 3.10+：
 pip install -r requirements.txt
 ```
 
+本人网页扫码登录助手另装 Playwright：
+
+```bash
+pip install -r requirements-browser.txt
+```
+
+默认启动本机 Chrome 的可见窗口；运行环境还需安装 Chrome。`channel="chromium"` 可改用 Playwright Chromium，需先运行 `python -m playwright install chromium`。浏览器使用专属配置目录，不要指向日常 Chrome 的用户数据目录。
+
 媒体上传另装官方 SDK：
 
 ```bash
@@ -38,13 +47,29 @@ npm install
 
 复制 `.env.example` 到本机 `.env` 后填写所需凭证。示例显式调用 `load_dotenv()`；库本身不会自动读取 `.env`，已有的进程环境变量也不会被覆盖。不要提交真实 Cookie、Access Secret、OAuth app_key 或发布密钥。
 
-### 三类鉴权分别申请
+### 网页会话与三类官方鉴权
+
+网页扫码登录仅供本人在可见浏览器里建立知乎网页会话。它无需开发者凭证，也不会生成数据平台 Access Secret、第三方 OAuth token 或创作者发布签名凭证。下列三类官方鉴权分别申请：
 
 1. **数据读取**：在[知乎数据开放平台个人中心](https://developer.zhihu.com/profile)获取 Access Secret。请求用 Bearer 和 `X-Request-Timestamp`。
 2. **OAuth 第三方登录**：依[知乎 OAuth 文档](https://developer.zhihu.com/docs?key=zhihu_oauth_integrated)向 `openplatform@zhihu.com` 申请 `app_id`、`app_key` 和 `redirect_uri`。授权完成后回调参数为 `authorization_code`；后端换取用户 OAuth token。只有对应权限获批且用户授权后，才能读其公开内容。
 3. **创作者发布和媒体云**：知乎个人主页 `/people/<token>` 中的 token 用作 `ZHIHU_OPENAPI_APP_KEY`；在[发布平台申请页](https://www.zhihu.com/playground/zhihu-publisher)申请 `ZHIHU_OPENAPI_APP_SECRET`。当前为内测能力，账号需获准。发布请求使用 `X-App-Key` 等 Header 和 HMAC-SHA256 签名。它与数据 Access Secret、OAuth app_key 不互换。
 
 ## 最小示例
+
+本人网页扫码与只读账号态核验：
+
+```python
+from apis.zhihu_browser_auth import ZhihuBrowserAuth
+
+with ZhihuBrowserAuth(profile_dir=".zhihu-browser-profile") as login:
+    login.open_login()  # 知乎页面展示二维码；请本人用知乎 App 扫码
+    input("扫码完成后按回车核验账号态：")
+    state = login.verify_account()
+    print("已确认登录：", state.authenticated is True, "核验结果：", state.reason)
+```
+
+`verify_account()` 只打开知乎首页并读取浏览器内 `/api/v4/me` 的状态与用户类型；不会返回个人资料或 Cookie。`authenticated=True` 表示响应明确识别为非访客；`False` 表示明确识别为访客；`None` 表示请求被拒或响应未能识别，需要在浏览器内人工确认。该核验路径来自仓库已有网页脚本，真实扫码后的返回仍待账号验收。`profile_dir=None` 则仅在当前进程内保留会话；示例配置目录已被 Git 忽略，其中可能包含敏感会话数据，请妥善保管。关闭浏览器后，持久配置可供下一次运行继续使用，具体登录有效期由知乎决定。这里不实现二维码 HTTP 协议，也不把网页会话传给下文的官方 API 客户端。
 
 ```python
 import os
@@ -136,6 +161,6 @@ python App.py
 python -m unittest discover -s tests -v
 ```
 
-测试用模拟 HTTP 验证路径、参数、鉴权 Header、签名、请求体和业务错误，不调用知乎线上接口。真实搜索、OAuth、上传和发布需具备对应账号权限后单独联调。
+测试用模拟 HTTP 验证路径、参数、鉴权 Header、签名、请求体和业务错误；浏览器助手使用模拟 Playwright 验证可见窗口、会话目录和只读核验逻辑。测试不启动 Chrome，也不调用知乎线上接口。真实扫码、搜索、OAuth、上传和发布需具备对应账号权限后单独联调。
 
 官方来源：[数据开放平台文档](https://developer.zhihu.com/docs)、[官方 Publish OpenAPI 协议](https://github.com/zhihu/ZhihuPublisher/blob/main/zhihu-publish/reference/publish-openapi.md)、[官方媒体云 SDK](https://github.com/zhihu/zhihu-mediacloud-uploader)。
