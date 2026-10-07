@@ -76,8 +76,6 @@ class ZhihuCreatorAPI:
     def _topics(tokens: Sequence[str] | None, maximum: int) -> list[dict[str, str]] | None:
         if tokens is None:
             return None
-        if len(tokens) > maximum:
-            raise ValueError(f"最多支持 {maximum} 个话题")
         result = []
         seen = set()
         for token in tokens:
@@ -87,6 +85,8 @@ class ZhihuCreatorAPI:
             if value not in seen:
                 result.append({"topic_id": "", "topic_token": value, "topic_name": ""})
                 seen.add(value)
+        if len(result) > maximum:
+            raise ValueError(f"最多支持 {maximum} 个话题")
         return result or None
 
     def _publish(self, content_type: str, content: dict, *, confirmed: bool) -> dict:

@@ -123,6 +123,26 @@ class PublishContractTests(unittest.TestCase):
             client.publish_article("题目", "<p>内容</p>")
         self.assertEqual(session.calls, [])
 
+    def test_topic_limit_applies_after_ordered_deduplication(self):
+        client, session = self.make_client()
+        client.publish_article(
+            "题目", "<p>内容</p>", confirmed=True,
+            topic_tokens=["19555547", "2", "19555547", "3"],
+        )
+        self.assertEqual(
+            session.calls[0][2]["json"]["content"]["topics"],
+            [
+                {"topic_id": "", "topic_token": value, "topic_name": ""}
+                for value in ("19555547", "2", "3")
+            ],
+        )
+        with self.assertRaisesRegex(ValueError, "最多支持 3 个话题"):
+            client.publish_article(
+                "题目", "<p>内容</p>", confirmed=True,
+                topic_tokens=["1", "2", "2", "3", "4"],
+            )
+        self.assertEqual(len(session.calls), 1)
+
     def test_question_and_pin_payloads(self):
         client, session = self.make_client()
         client.publish_question("为什么？", confirmed=True, topic_tokens=["19555547"])
