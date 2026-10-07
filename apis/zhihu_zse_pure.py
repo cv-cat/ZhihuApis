@@ -22,6 +22,8 @@ _CUSTOM_ALPHABET = "6fpLRqJO8M/c3jnYxFkUVC4ZIG12SiH=5v0mXDazWBTsuw7QetbKdoPyAl+h
 _STANDARD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 # The extra '=' in the browser table is intentional.  The 48-byte payload
 # has no padding, so only indices 0..63 are selected.
+# The current bundle emits marker byte 0x14 (older writeups may show 0x15);
+# this value is taken from the captured module-1514 block input.
 _CUSTOM_TRANS = str.maketrans(_STANDARD_ALPHABET, _CUSTOM_ALPHABET[:64])
 _CONST = bytes([232, 0, 0, 2, 128, 192, 0, 8, 14, 0, 0, 0]) * 4
 _MASK = 0xFFFFFFFF
