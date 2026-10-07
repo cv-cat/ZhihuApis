@@ -280,6 +280,8 @@ class ZhihuHTTPAuth:
     def validate_captcha(self, ticket: str, *, scene: str = "digits_login") -> dict:
         if not isinstance(ticket, str) or not ticket.strip():
             raise ValueError("ticket 不能为空")
+        if not isinstance(scene, str) or not scene.strip():
+            raise ValueError("scene 不能为空")
         response = self._request(
             "PUT", CAPTCHA_URL, data={"ticket": ticket.strip(), "scene": scene}, allow_redirects=False
         )

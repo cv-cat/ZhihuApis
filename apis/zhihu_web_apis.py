@@ -48,7 +48,12 @@ class ZhihuWebAPI:
     ) -> None:
         if timeout <= 0:
             raise ValueError("timeout 必须大于 0")
-        candidate = session or getattr(auth, "session", None) or auth
+        if session is not None:
+            candidate = session
+        else:
+            candidate = getattr(auth, "session", None)
+            if candidate is None:
+                candidate = auth
         if not hasattr(candidate, "request"):
             raise TypeError("auth 必须是 ZhihuHTTPAuth 或 requests.Session")
         self._auth = auth if isinstance(auth, ZhihuHTTPAuth) else None
