@@ -80,6 +80,8 @@ Python SM4/CBC 实现生成网页请求的 `x-zse-96`，不会创建浏览器或
 `link` 是二维码原文，可交给任意二维码渲染库或直接显示给用户；扫码和在
 手机端确认登录由用户完成。
 
+2026-10-25 zsEncrypt 深挖补充：QR 登录确认拍的 `scan_info` 响应直接返回 `access_token/refresh_token/uid/user_id` 并 Set-Cookie `z_c0`——**QR 纯 HTTP 登录无需 zsEncrypt**，建码→轮询→确认即闭环。`zsEncrypt` 仅 SMS/密码登录（`sign_in/digits`、`validate/sign_in/digits`、`register`）必需；已解剖其架构（模块 28005 中间件 → 模块 1514 两级 VM → `window.__ZH__.zse.{zk,zb,zm}` 密钥），并提供浏览器 CDP webpack 劫持的加密 oracle（`wpReq(1514).ZP(明文)`，端到端已验证服务端接受密文）。web OAuth `client_id=d1b964811afb40118a12068ff74a12f4`。证据 `continue_20261023/login_chain_findings.md`。
+
 2026-10-25 真实抓包补充（`working_dir/platform_api_rework/continue_20261023/login_chain_findings.md`）：
 
 - `scan_info` 状态：`{"status":0}` 等待；`{"status":5,"new_token":{"Token","ExpiresAt","Link"}}` 过期自动换码（约 2 分钟一轮，页面直接改轮新 token）。
