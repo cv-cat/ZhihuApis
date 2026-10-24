@@ -80,6 +80,13 @@ Python SM4/CBC 实现生成网页请求的 `x-zse-96`，不会创建浏览器或
 `link` 是二维码原文，可交给任意二维码渲染库或直接显示给用户；扫码和在
 手机端确认登录由用户完成。
 
+2026-10-25 真实抓包补充（`working_dir/platform_api_rework/continue_20261023/login_chain_findings.md`）：
+
+- `scan_info` 状态：`{"status":0}` 等待；`{"status":5,"new_token":{"Token","ExpiresAt","Link"}}` 过期自动换码（约 2 分钟一轮，页面直接改轮新 token）。
+- 手机确认后的完成步骤是 `POST /api/v3/oauth/sign_in`，请求体为 `zsEncrypt` 加密串，响应返回 `access_token/refresh_token/cookie{q_c0,z_c0}` 并 Set-Cookie `z_c0`；该加密体生成链尚未逆向，纯 HTTP 复现登录完成仍需先解决 zsEncrypt。
+- 同日独立进程验证：扫码落地导出的完整 Cookie 经 `ZhihuHTTPAuth.from_cookie_header` 直连（`trust_env=False`）后 `/api/v4/me` 返回 `user_type=people`，`ZhihuWebAPI.search` 正常返回 20 条——知乎读取链带登录 Cookie 完全可用，无头条那类环境级风控墙。
+- 知乎登录页短信流程前置加载网易易盾（`c.dun.163.com`）与 `api/v3/oauth/captcha/v2`，发送短信验证码前有人机验证。
+
 ```python
 from apis.zhihu_http_auth import HumanVerificationRequired, ZhihuHTTPAuth
 
