@@ -35,7 +35,7 @@ CAPTCHA_URL = f"{BASE_URL}/api/v3/oauth/captcha/v2"
 _COOKIE_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 _DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36"
 )
 
 
@@ -122,10 +122,14 @@ class ZhihuHTTPAuth:
         headers = {
             "User-Agent": user_agent,
             "Accept": "application/json, text/plain, */*",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Referer": SIGNIN_URL,
             "Origin": BASE_URL,
             "X-Requested-With": "fetch",
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-site",
         }
         match = re.search(r"Chrome/(\d+)", user_agent)
         if match:
