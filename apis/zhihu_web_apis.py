@@ -193,6 +193,57 @@ class ZhihuWebAPI:
                 return self.get_article(match.group(2))
         raise ValueError("当前只支持回答或文章内容 URL")
 
+    # ---- 私信（2026-11-20 实测闭环：inbox → 会话 → 发送） ----
+
+    def list_inbox(self, *, limit: int = 15) -> dict:
+        """读取私信会话列表（/api/v4/inbox）。"""
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+            raise ValueError("limit 范围为 1-50")
+        payload = self._get(f"/api/v4/inbox?limit={limit}")
+        if not isinstance(payload.get("data"), list):
+            raise ZhihuAPIError("inbox 响应缺少 data", http_status=200)
+        return payload
+
+    def list_messages(self, sender_id: str, *, limit: int = 20) -> dict:
+        """读取与单个用户的私信往来（api.zhihu.com/messages?sender_id=）。"""
+        if not isinstance(sender_id, str) or not sender_id.strip():
+            raise ValueError("sender_id 不能为空")
+        identifier = sender_id.strip()
+        if not identifier.isascii() or not (identifier.lstrip("-").isdigit()):
+            raise ValueError("sender_id 必须是数字 ID")
+        path = "/messages?" + urlencode({"sender_id": identifier, "limit": limit})
+        payload = self._get(path, host="https://api.zhihu.com")
+        if not isinstance(payload.get("data"), list):
+            raise ZhihuAPIError("messages 响应缺少 data", http_status=200)
+        return payload
+
+    def send_chat_message(self, receiver_id: str, text: str) -> dict:
+        """发送一条文本私信（POST /api/v4/chat，需 x-xsrftoken）。
+
+        ``receiver_id`` 是对方用户数字 ID（``people/<id>`` 的 id 部分，可为负号
+        开头的隐藏 ID）。成功时返回落库的消息对象。
+        """
+        if not isinstance(receiver_id, str) or not receiver_id.strip():
+            raise ValueError("receiver_id 不能为空")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("text 不能为空")
+        identifier = receiver_id.strip()
+        if not identifier.isascii() or not (identifier.lstrip("-").isdigit()):
+            raise ValueError("receiver_id 必须是数字 ID")
+        if len(text) > 2000:
+            raise ValueError("text 超过单条私信长度上限")
+        xsrf = self._xsrf_header()
+        if not xsrf:
+            raise ZhihuAPIError("缺少 _xsrf Cookie，无法发送私信", http_status=None)
+        payload = self._write(
+            path="/api/v4/chat",
+            method="POST",
+            body={"content_type": "text", "receiver_id": identifier, "text": text},
+        )
+        if not isinstance(payload, dict) or not isinstance(payload.get("info"), dict):
+            raise ZhihuAPIError("私信发送响应缺少 info 消息对象", http_status=200)
+        return payload
+
     def draft_counts(self) -> dict[str, dict]:
         """读取回答和文章草稿计数。"""
         result = {}
